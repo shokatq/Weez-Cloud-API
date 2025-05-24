@@ -18,7 +18,47 @@ def get_blob_client(email, filename):
     blob_name = f"{email}/{filename}"
     return blob_service_client.get_blob_client(container=CONTAINER_NAME, blob=blob_name)
 
+def get_mime_type(filename):
+    mime_type, _ = mimetypes.guess_type(filename)
+    if not mime_type:
+        # Fallback for common file types
+        ext = os.path.splitext(filename)[1].lower()
+        mime_types = {
+            '.doc': 'application/msword',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xls': 'application/vnd.ms-excel',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            '.ppt': 'application/vnd.ms-powerpoint',
+            '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            '.pdf': 'application/pdf',
+            '.txt': 'text/plain',
+            '.csv': 'text/csv',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+        }
+        mime_type = mime_types.get(ext, 'application/octet-stream')
+    return mime_type
+
 # Upload a file
+#@app.route('/upload', methods=['POST'])
+#def upload_file():
+#    try:
+#        email = request.form['email']
+#        file = request.files['file']
+#        filename = file.filename
+#
+#        blob_client = get_blob_client(email, filename)
+#        blob_client.upload_blob(file, overwrite=True)
+#
+#        # Store metadata (e.g., upload date)
+#        blob_client.set_blob_metadata({"upload_date": datetime.now(timezone.utc).isoformat()})
+#
+#        return jsonify({"message": f"File {filename} uploaded successfully"}), 200
+#    except Exception as e:
+#        return jsonify({"error": str(e)}), 500
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     try:
@@ -27,10 +67,17 @@ def upload_file():
         filename = file.filename
 
         blob_client = get_blob_client(email, filename)
-        blob_client.upload_blob(file, overwrite=True)
-
-        # Store metadata (e.g., upload date)
-        blob_client.set_blob_metadata({"upload_date": datetime.now(timezone.utc).isoformat()})
+        mime_type = get_mime_type(filename)
+        
+        # Upload with explicit content type
+        blob_client.upload_blob(file, overwrite=True, content_settings={'content_type': mime_type})
+        
+        # Store metadata
+        blob_client.set_blob_metadata({
+            "upload_date": datetime.now(timezone.utc).isoformat(),
+            "starred": "false",
+            "mime_type": mime_type  # Store MIME type in metadata
+        })
 
         return jsonify({"message": f"File {filename} uploaded successfully"}), 200
     except Exception as e:
@@ -51,6 +98,26 @@ def delete_file():
         return jsonify({"error": str(e)}), 500
 
 # List files with metadata
+#@app.route('/list', methods=['GET'])
+#def list_files():
+#    try:
+#        email = request.args.get('email')
+#        container_client = blob_service_client.get_container_client(CONTAINER_NAME)
+#        blobs = container_client.list_blobs(name_starts_with=f"{email}/", include=['metadata'])
+#        file_list = [
+#            {
+#                "name": blob.name.split('/')[1],
+#                "size": blob.size,
+#                "upload_date": blob.metadata.get("upload_date", ""),
+#                "mime_type": mimetypes.guess_type(blob.name.split('/')[1])[0] or "application/octet-stream",
+#                "starred": blob.metadata.get("starred", "false") == "true"
+#            }
+#            for blob in blobs
+#        ]
+#        return jsonify({"files": file_list}), 200
+#    except Exception as e:
+#        return jsonify({"error": str(e)}), 500
+
 @app.route('/list', methods=['GET'])
 def list_files():
     try:
@@ -62,7 +129,7 @@ def list_files():
                 "name": blob.name.split('/')[1],
                 "size": blob.size,
                 "upload_date": blob.metadata.get("upload_date", ""),
-                "mime_type": mimetypes.guess_type(blob.name.split('/')[1])[0] or "application/octet-stream",
+                "mime_type": blob.metadata.get("mime_type", get_mime_type(blob.name.split('/')[1])),
                 "starred": blob.metadata.get("starred", "false") == "true"
             }
             for blob in blobs
@@ -70,16 +137,42 @@ def list_files():
         return jsonify({"files": file_list}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+        
 
 # Generate SAS URL (for download/share/preview)
+#@app.route('/generate-sas', methods=['POST'])
+#def generate_sas():
+#    try:
+#        email = request.json['email']
+#        filename = request.json['filename']
+#        duration = int(request.json.get('duration', 1))  # Default 1 hour
+#
+#        blob_client = get_blob_client(email, filename)
+#        sas_token = generate_blob_sas(
+#            account_name=blob_service_client.account_name,
+#            container_name=CONTAINER_NAME,
+#            blob_name=f"{email}/{filename}",
+#            account_key=blob_service_client.credential.account_key,
+#            permission=BlobSasPermissions(read=True),
+#            expiry=datetime.now(timezone.utc) + timedelta(hours=duration)
+#        )
+#        sas_url = f"{blob_client.url}?{sas_token}"
+#
+#        return jsonify({"sas_url": sas_url}), 200
+#    except Exception as e:
+#        return jsonify({"error": str(e)}), 500
+
 @app.route('/generate-sas', methods=['POST'])
 def generate_sas():
     try:
         email = request.json['email']
         filename = request.json['filename']
-        duration = int(request.json.get('duration', 1))  # Default 1 hour
+        duration = int(request.json.get('duration', 1))
 
         blob_client = get_blob_client(email, filename)
+        blob_properties = blob_client.get_blob_properties()
+        mime_type = blob_properties.content_settings.content_type or get_mime_type(filename)
+
         sas_token = generate_blob_sas(
             account_name=blob_service_client.account_name,
             container_name=CONTAINER_NAME,
@@ -88,9 +181,9 @@ def generate_sas():
             permission=BlobSasPermissions(read=True),
             expiry=datetime.now(timezone.utc) + timedelta(hours=duration)
         )
-        sas_url = f"{blob_client.url}?{sas_token}"
+        sas_url = f"{blob_client.url}?{sas_token}&_mime_type={mime_type}"  # Append MIME type as query param
 
-        return jsonify({"sas_url": sas_url}), 200
+        return jsonify({"sas_url": sas_url, "mime_type": mime_type}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
